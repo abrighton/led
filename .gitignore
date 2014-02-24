@@ -16,5 +16,8 @@
 *.out
 *.so
 *.so.*
-/led
 *~
+/.cproject
+/.project
+/TAGS
+/led

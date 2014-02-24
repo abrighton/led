@@ -1,3 +1,5 @@
+// generated with the "ethercat cstruct" command
+
 /* Master 0, Slave 1, "EL2202"
  * Vendor ID:       0x00000002
  * Product code:    0x089a3052
@@ -28,7 +30,7 @@ ec_sync_info_t slave_1_syncs[] = {
  */
 
 ec_pdo_entry_info_t slave_2_pdo_entries[] = {
-    {0x6000, 0x01, 1}, /* Input */
+    {0x6000, 0x01, 1}, /* Input *
     {0x6000, 0x02, 1}, /* Input */
     {0x0000, 0x00, 6},
     {0x1d09, 0xae, 8}, /* Status1 */

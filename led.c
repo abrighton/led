@@ -1,31 +1,14 @@
-/*****************************************************************************
- *
- *  $Id$
- *
- *  Copyright (C) 2007-2009  Florian Pose, Ingenieurgemeinschaft IgH
- *
- *  This file is part of the IgH EtherCAT Master.
- *
- *  The IgH EtherCAT Master is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License version 2, as
- *  published by the Free Software Foundation.
- *
- *  The IgH EtherCAT Master is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
- *  Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with the IgH EtherCAT Master; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- *  ---
- *
- *  The license mentioned above concerns the source code only. Using the
- *  EtherCAT technology and brand is only permitted in compliance with the
- *  industrial property and similar rights of Beckhoff Automation GmbH.
- *
- ****************************************************************************/
+// EtherCat demo program (Based on the Etherlab "user" example).
+//
+// This demo assumes the following ethercat slaves (in this order):
+// 0  0:0  PREOP  +  EK1100 EtherCAT-Koppler (2A E-Bus)
+// 1  0:1  PREOP  +  EL2202 2K. Dig. Ausgang 24V, 0.5A
+// 2  0:2  PREOP  +  EL1252 2K. Fast Dig. Eingang 24V, 1�s, DC Latch
+// 3  0:3  PREOP  +  EL1252 2K. Fast Dig. Eingang 24V, 1�s, DC Latch
+// 4  0:4  PREOP  +  EL2252 2K. Dig. Ausgang 24V, 0.5A, DC Time Stamp
+//
+// 
+
 
 #include <errno.h>
 #include <signal.h>
@@ -40,28 +23,28 @@
 
 #include "ecrt.h"
 #include "slaves.h" // generated with the "ethercat cstruct" command
+#include "EL2202.h"
 
 /****************************************************************************/
 
-// Application parameters
+// Controls how often the cyclic_task() routine is called (in usec)
 #define FREQUENCY 100
+
+// If not 0, give this process a higher priority (requires root priv)
 #define PRIORITY 0
 
 // Optional features
-#define CONFIGURE_PDOS  1
 #define SDO_ACCESS      0
 
 /****************************************************************************/
 
-// EtherCAT
+// EtherCAT master
 static ec_master_t *master = NULL;
 static ec_master_state_t master_state = {};
 
+// EtherCAT domain
 static ec_domain_t *domain1 = NULL;
 static ec_domain_state_t domain1_state = {};
-
-static ec_slave_config_t *slave1_out1 = NULL;
-static ec_slave_config_state_t slave1_out1_state = {};
 
 // Timer
 static unsigned int sig_alarms = 0;
@@ -69,39 +52,42 @@ static unsigned int user_alarms = 0;
 
 /****************************************************************************/
 
-// process data
+// process data (PD)
 static uint8_t *domain1_pd = NULL;
 
+// Device positions
 #define BusCouplerPos  0, 0
 #define Slave1Pos 0, 1
 #define Slave2Pos 0, 2
 #define Slave3Pos 0, 3
+#define Slave4Pos 0, 4
+
+// This demo application is hard wired to use the following devices (in this order). 
+// See the generated slaves.h file.
 
 // EK1100 | EtherCAT Coupler
 #define Beckhoff_EK1100 0x00000002, 0x044c2c52
 
-// EL2202 | 2-channel digital output terminal 24 V DC, TON/TOFF 1 µs, push-pull
-#define Beckhoff_EL2202 0x00000002, 0x089a3052
-
-// EL1252 | 2-channel digital input terminal with time stamp
+// Slaves 2, 3: EL1252 | 2-channel digital input terminal with time stamp
 #define Beckhoff_EL1252 0x00000002, 0x04e43052
 
-// EL2252 | 2-channel digital output terminal with time stamp, tri-state
+// Slave 4: EL2252 | 2-channel digital output terminal with time stamp, tri-state
 #define Beckhoff_EL2252 0x00000002, 0x08cc3052
 
-// offsets for PDO entries
-static unsigned int off_slave1_out1;
-static unsigned int off_slave1_tristate1;
-static unsigned int off_slave1_out2;
-static unsigned int off_slave1_tristate2;
+// Define a struct for each slave to hold values read or written
+static El2202 el2202;
 
 const static ec_pdo_entry_reg_t domain1_regs[] = {
-    {Slave1Pos, Beckhoff_EL2202, 0x7000, 0x01, &off_slave1_out1},
-//    {Slave1Pos, Beckhoff_EL2202, 0x7000, 0x02, &off_slave1_tristate1},
-//    {Slave1Pos, Beckhoff_EL2202, 0x7010, 0x01, &off_slave1_out2},
-//    {Slave1Pos, Beckhoff_EL2202, 0x7010, 0x02, &off_slave1_tristate2},
+    {Slave1Pos, Beckhoff_EL2202, 0x7000, 0x01, &el2202.offset_out[0], &el2202.bit_pos_out[0]},
+    {Slave1Pos, Beckhoff_EL2202, 0x7000, 0x02, &el2202.offset_tristate[0], &el2202.bit_pos_tristate[0]},
+    {Slave1Pos, Beckhoff_EL2202, 0x7010, 0x01, &el2202.offset_out[1], &el2202.bit_pos_out[1]},
+    {Slave1Pos, Beckhoff_EL2202, 0x7010, 0x02, &el2202.offset_tristate[1], &el2202.bit_pos_tristate[1]},
 
-//    {Slave2Pos, Beckhoff_EL1252, ...},
+//    {Slave2Pos, Beckhoff_EL1252, 0x6000, 0x01, &off_slave2_in1},
+//    {Slave2Pos, Beckhoff_EL1252, 0x6000, 0x02, &off_slave2_in2},
+//    {Slave2Pos, Beckhoff_EL1252, 0x1d09, 0xae, &off_slave2_status1},
+//    {Slave2Pos, Beckhoff_EL1252, 0x1d09, 0xaf, &off_slave2_status2},
+
 //    {0, 3, Beckhoff_EL1252, ...},
 //    {0, 4, Beckhoff_EL2252, ...},
     {}
@@ -117,7 +103,7 @@ static ec_sdo_request_t *sdo;
 
 /*****************************************************************************/
 
-void check_domain1_state(void)
+static void check_domain1_state(void)
 {
     
     ec_domain_state_t ds;
@@ -134,7 +120,7 @@ void check_domain1_state(void)
 
 /*****************************************************************************/
 
-void check_master_state(void)
+static void check_master_state(void)
 {
     ec_master_state_t ms;
 
@@ -151,28 +137,27 @@ void check_master_state(void)
 }
 
 /*****************************************************************************/
-
-void check_slave_config_states(void)
+// 
+static void check_slave_config_states(char* name, ec_slave_config_t* config, ec_slave_config_state_t* state)
 {
     ec_slave_config_state_t s;
 
-    ecrt_slave_config_state(slave1_out1, &s);
+    ecrt_slave_config_state(config, &s);
 
-    if (s.al_state != slave1_out1_state.al_state)
-        printf("Slave1 Out1: State 0x%02X.\n", s.al_state);
-    if (s.online != slave1_out1_state.online)
-        printf("Slave1 Out1: %s.\n", s.online ? "online" : "offline");
-    if (s.operational != slave1_out1_state.operational)
-        printf("Slave1 Out1: %soperational.\n",
-                s.operational ? "" : "Not ");
+    if (s.al_state != state->al_state)
+        printf("%s: State 0x%02X.\n", name, s.al_state);
+    if (s.online != state->online)
+        printf("%s: %s.\n", name, s.online ? "online" : "offline");
+    if (s.operational != state->operational)
+        printf("%s: %soperational.\n", name, s.operational ? "" : "Not ");
 
-    slave1_out1_state = s;
+    *state = s;
 }
 
 /*****************************************************************************/
 
 #if SDO_ACCESS
-void read_sdo(void)
+static void read_sdo(void)
 {
     switch (ecrt_sdo_request_state(sdo)) {
         case EC_REQUEST_UNUSED: // request was not used yet
@@ -195,14 +180,30 @@ void read_sdo(void)
 #endif
 
 /****************************************************************************/
+// Do the write for the EL2202: alternately blink the LEDs
+// (Note: Setting a tristate bit to 1 turns the devices LED yellow and disables the output.
+static void write_process_data_el2202() {
+    EC_WRITE_BIT(domain1_pd + el2202.offset_tristate[0], el2202.bit_pos_tristate[0], 0x00);
+    EC_WRITE_BIT(domain1_pd + el2202.offset_tristate[1], el2202.bit_pos_tristate[1], 0x00);
+    EC_WRITE_BIT(domain1_pd + el2202.offset_out[0], el2202.bit_pos_out[0], blink ? 0x01 : 0x00);
+    EC_WRITE_BIT(domain1_pd + el2202.offset_out[1], el2202.bit_pos_out[1], blink ? 0x00 : 0x01);
+}
 
-void cyclic_task()
+/****************************************************************************/
+static void write_process_data() {
+    write_process_data_el2202();
+}
+
+/****************************************************************************/
+// ONCE THE MASTER IS ACTIVATED, THE APP IS IN CHARGE OF EXCHANGING DATA THROUGH
+// EXPLICIT CALLS TO THE ECRT LIBRARY (DONE IN THE IDLE STATE BY THE MASTER)
+static void cyclic_task()
 {
     int i;
 
     // receive process data
-    ecrt_master_receive(master);
-    ecrt_domain_process(domain1);
+    ecrt_master_receive(master);  // RECEIVE A FRAME
+    ecrt_domain_process(domain1); // DETERMINE THE DATAGRAM STATES
 
     // check process data state (optional)
     check_domain1_state();
@@ -219,7 +220,7 @@ void cyclic_task()
         check_master_state();
 
         // check for islave configuration state(s) (optional)
-        check_slave_config_states();
+        check_slave_config_states("Slave1", el2202.config, &el2202.config_state);
 
 #if SDO_ACCESS
         // read process data SDO
@@ -235,21 +236,17 @@ void cyclic_task()
             EC_READ_U16(domain1_pd + slave1_out1_value));
 #endif
 
-#if 1
     // write process data
-    EC_WRITE_U8(domain1_pd + off_slave1_out1, blink ? 0x01 : 0x00);
-    //printf("XXX blink %d\n", blink);
-
-#endif
+    write_process_data();
 
     // send process data
-    ecrt_domain_queue(domain1);
-    ecrt_master_send(master);
+    ecrt_domain_queue(domain1); // MARK THE DOMAIN DATA AS READY FOR EXCHANGE
+    ecrt_master_send(master);   // SEND ALL QUEUED DATAGRAMS
 }
 
 /****************************************************************************/
 
-void signal_handler(int signum) {
+static void signal_handler(int signum) {
     switch (signum) {
         case SIGALRM:
             sig_alarms++;
@@ -258,94 +255,9 @@ void signal_handler(int signum) {
 }
 
 /****************************************************************************/
-
-int main(int argc, char **argv)
-{
-    ec_slave_config_t *sc;
+static int set_timer() {
     struct sigaction sa;
     struct itimerval tv;
-    
-    master = ecrt_request_master(0);
-    if (!master)
-        return -1;
-
-    domain1 = ecrt_master_create_domain(master);
-    if (!domain1)
-        return -1;
-
-    if (!(slave1_out1 = ecrt_master_slave_config(
-                    master, Slave1Pos, Beckhoff_EL2202))) {
-        fprintf(stderr, "Failed to get slave configuration.\n");
-        return -1;
-    }
-
-#if SDO_ACCESS
-    fprintf(stderr, "Creating SDO requests...\n");
-    if (!(sdo = ecrt_slave_config_create_sdo_request(slave1_out1, 
-						     slave_1_pdo_entries[0].index, 
-						     slave_1_pdo_entries[0].subindex, 
-						     slave_1_pdo_entries[0].bitlength))) {
-        fprintf(stderr, "Failed to create SDO request.\n");
-        return -1;
-    }
-    ecrt_sdo_request_timeout(sdo, 500); // ms
-#endif
-
-#if CONFIGURE_PDOS
-    printf("Configuring PDOs...\n");
-    if (ecrt_slave_config_pdos(slave1_out1, EC_END, slave_1_syncs)) {
-        fprintf(stderr, "Failed to configure PDOs.\n");
-        return -1;
-    }
-
-    if (!(sc = ecrt_master_slave_config(
-                    master, Slave1Pos, Beckhoff_EL2202))) {
-        fprintf(stderr, "Failed to get slave configuration.\n");
-        return -1;
-    }
-
-//    if (ecrt_slave_config_pdos(sc, EC_END, el4102_syncs)) {
-//        fprintf(stderr, "Failed to configure PDOs.\n");
-//        return -1;
-//    }
-//
-//    if (!(sc = ecrt_master_slave_config(
-//                    master, DigOutSlavePos, Beckhoff_EL2032))) {
-//        fprintf(stderr, "Failed to get slave configuration.\n");
-//        return -1;
-//    }
-//
-//    if (ecrt_slave_config_pdos(sc, EC_END, el2004_syncs)) {
-//        fprintf(stderr, "Failed to configure PDOs.\n");
-//        return -1;
-//    }
-#endif
-
-    // Create configuration for bus coupler
-    sc = ecrt_master_slave_config(master, BusCouplerPos, Beckhoff_EK1100);
-    if (!sc)
-        return -1;
-
-    if (ecrt_domain_reg_pdo_entry_list(domain1, domain1_regs)) {
-        fprintf(stderr, "PDO entry registration failed!\n");
-        return -1;
-    }
-
-    printf("Activating master...\n");
-    if (ecrt_master_activate(master))
-        return -1;
-
-    if (!(domain1_pd = ecrt_domain_data(domain1))) {
-        return -1;
-    }
-
-#if PRIORITY
-    pid_t pid = getpid();
-    if (setpriority(PRIO_PROCESS, pid, -19))
-        fprintf(stderr, "Warning: Failed to set priority: %s\n",
-                strerror(errno));
-#endif
-
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
@@ -364,6 +276,75 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to start timer: %s\n", strerror(errno));
         return 1;
     }
+}
+
+/****************************************************************************/
+int main(int argc, char **argv)
+{
+    ec_slave_config_t *sc;
+    
+    // FIRST, REQUEST A MASTER INSTANCE
+    master = ecrt_request_master(0);
+    if (!master)
+        return -1;
+
+    // THEN, CREATE A DOMAIN
+    domain1 = ecrt_master_create_domain(master);
+    if (!domain1)
+        return -1;
+
+#if SDO_ACCESS
+    fprintf(stderr, "Creating SDO requests...\n");
+    if (!(sdo = ecrt_slave_config_create_sdo_request(el2202.config, 
+						     slave_1_pdo_entries[0].index, 
+						     slave_1_pdo_entries[0].subindex, 
+						     slave_1_pdo_entries[0].bitlength))) {
+        fprintf(stderr, "Failed to create SDO request.\n");
+        return -1;
+    }
+    ecrt_sdo_request_timeout(sdo, 500); // ms
+#endif
+
+    printf("Configuring PDOs...\n");
+    if (!(el2202.config = ecrt_master_slave_config(master, Slave1Pos, Beckhoff_EL2202))) {
+        fprintf(stderr, "Failed to get slave configuration.\n");
+        return -1;
+    }
+
+    if (ecrt_slave_config_pdos(el2202.config, EC_END, slave_1_syncs)) {
+        fprintf(stderr, "Failed to configure PDOs.\n");
+        return -1;
+    }
+
+    // Create configuration for bus coupler
+    sc = ecrt_master_slave_config(master, BusCouplerPos, Beckhoff_EK1100);
+    if (!sc) {
+        return -1;
+    }
+
+    if (ecrt_domain_reg_pdo_entry_list(domain1, domain1_regs)) {
+        fprintf(stderr, "PDO entry registration failed!\n");
+        return -1;
+    }
+
+    // ACTIVATE THE MASTER. DO NOT APPLY ANY CONFIGURATION AFTER THIS, IT WON'T WORK
+    printf("Activating master...\n");
+    if (ecrt_master_activate(master))
+        return -1;
+
+    // INITIALIZE THE PROCESS DOMAIN MEMORY (FOR USER-SPACE APPS)
+    if (!(domain1_pd = ecrt_domain_data(domain1))) {
+        return -1;
+    }
+
+#if PRIORITY
+    pid_t pid = getpid();
+    if (setpriority(PRIO_PROCESS, pid, -19))
+        fprintf(stderr, "Warning: Failed to set priority: %s\n", strerror(errno));
+#endif
+
+    int timer_status = set_timer();
+    if (timer_status) return timer_status;
 
     printf("Started.\n");
     while (1) {
