@@ -79,7 +79,7 @@ const static ec_pdo_entry_reg_t domain1_regs[] = {
     {Slave1Pos, Beckhoff_EL2202, 0x7000, 0x02, &el2202.offset_tristate[0], &el2202.bit_pos_tristate[0]},
     {Slave1Pos, Beckhoff_EL2202, 0x7010, 0x01, &el2202.offset_out[1], &el2202.bit_pos_out[1]},
     {Slave1Pos, Beckhoff_EL2202, 0x7010, 0x02, &el2202.offset_tristate[1], &el2202.bit_pos_tristate[1]},
-/*
+
     // Slave 2: EL1252
     {Slave2Pos, Beckhoff_EL1252, 0x6000, 0x01, &el1252_1.offset_in[0], &el1252_1.bit_pos_in[0]},
     {Slave2Pos, Beckhoff_EL1252, 0x6000, 0x02, &el1252_1.offset_in[1], &el1252_1.bit_pos_in[1]},
@@ -99,7 +99,7 @@ const static ec_pdo_entry_reg_t domain1_regs[] = {
     {Slave3Pos, Beckhoff_EL1252, 0x1d09, 0xc0, &el1252_2.offset_latch_pos[1], &el1252_2.bit_pos_latch_pos[1]},
     {Slave3Pos, Beckhoff_EL1252, 0x1d09, 0xb8, &el1252_2.offset_latch_neg[0], &el1252_2.bit_pos_latch_neg[0]},
     {Slave3Pos, Beckhoff_EL1252, 0x1d09, 0xc8, &el1252_2.offset_latch_neg[1], &el1252_2.bit_pos_latch_neg[1]},
-*/
+
     // Slave 4: EL2252
     {Slave4Pos, Beckhoff_EL2252, 0x1d09, 0x81, &el2252.offset_activate, &el2252.bit_pos_activate},
     {Slave4Pos, Beckhoff_EL2252, 0x1d09, 0x90, &el2252.offset_start_time, &el2252.bit_pos_start_time},
@@ -248,8 +248,8 @@ static void cyclic_task()
 
         // check for islave configuration state(s) (optional)
         check_slave_config_states("Slave1", el2202.config, &el2202.config_state);
-        //check_slave_config_states("Slave2", el1252_1.config, &el1252_1.config_state);
-        //check_slave_config_states("Slave3", el1252_2.config, &el1252_2.config_state);
+        check_slave_config_states("Slave2", el1252_1.config, &el1252_1.config_state);
+        check_slave_config_states("Slave3", el1252_2.config, &el1252_2.config_state);
         check_slave_config_states("Slave4", el2252.config, &el2252.config_state);
 
 #if SDO_ACCESS
@@ -364,8 +364,8 @@ int main(int argc, char **argv)
 
     printf("Configuring PDOs...\n");
     if (configure_pdo(&el2202.config, slave_1_syncs, Slave1Pos, Beckhoff_EL2202)) return -1;
-    //if (configure_pdo(&el1252_1.config, slave_2_syncs, Slave2Pos, Beckhoff_EL1252)) return -1;
-    //if (configure_pdo(&el1252_2.config, slave_3_syncs, Slave3Pos, Beckhoff_EL1252)) return -1;
+    if (configure_pdo(&el1252_1.config, slave_2_syncs, Slave2Pos, Beckhoff_EL1252)) return -1;
+    if (configure_pdo(&el1252_2.config, slave_3_syncs, Slave3Pos, Beckhoff_EL1252)) return -1;
     if (configure_pdo(&el2252.config, slave_4_syncs, Slave4Pos, Beckhoff_EL2252)) return -1;
 
     // Create configuration for bus coupler
